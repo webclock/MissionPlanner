@@ -488,36 +488,6 @@ namespace MissionPlanner.Utilities
                     return false;
                 }
 
-                int apmformat_version = -1; // fail continue
-
-                if (board != BoardDetect.boards.px4 && board != BoardDetect.boards.px4v2 && board != BoardDetect.boards.px4v4 &&
-                    board != BoardDetect.boards.vrbrainv40 && board != BoardDetect.boards.vrbrainv45 &&
-                    board != BoardDetect.boards.vrbrainv50 && board != BoardDetect.boards.vrbrainv51 &&
-                    board != BoardDetect.boards.vrbrainv52 && board != BoardDetect.boards.vrcorev10 &&
-                    board != BoardDetect.boards.vrubrainv51 && board != BoardDetect.boards.vrubrainv52)
-                {
-                    try
-                    {
-                        apmformat_version = BoardDetect.decodeApVar(comport, board);
-                    }
-                    catch
-                    {
-                    }
-
-                    if (apmformat_version != -1 && apmformat_version != temp.k_format_version)
-                    {
-                        if (DialogResult.No ==
-                            CustomMessageBox.Show(Strings.EppromChanged,
-                                String.Format(Strings.EppromFormatChanged, apmformat_version, temp.k_format_version),
-                                MessageBoxButtons.YesNo))
-                        {
-                            CustomMessageBox.Show(Strings.PleaseConnectAndBackupConfig);
-                            return false;
-                        }
-                    }
-                }
-
-
                 log.Info("Detected a " + board);
 
                 updateProgress(-1, Strings.DetectedA + board);
@@ -608,46 +578,53 @@ namespace MissionPlanner.Utilities
                 request.Method = "GET";
                 // Get the request stream.
                 Stream dataStream; //= request.GetRequestStream();
-                // Get the response.
-                WebResponse response = request.GetResponse();
-                // Display the status.
-                log.Info(((HttpWebResponse) response).StatusDescription);
-                // Get the stream containing content returned by the server.
-                dataStream = response.GetResponseStream();
-
-                long bytes = response.ContentLength;
-                long contlen = bytes;
-
-                byte[] buf1 = new byte[1024];
-
-                FileStream fs =
-                    new FileStream(
-                        Path.GetDirectoryName(Application.ExecutablePath) + Path.DirectorySeparatorChar +
-                        @"firmware.hex", FileMode.Create);
-
-                updateProgress(0, Strings.DownloadingFromInternet);
-
-                dataStream.ReadTimeout = 30000;
-
-                while (dataStream.CanRead)
+                // Get the response (using statement is exception safe)
+                using (WebResponse response = request.GetResponse())
                 {
-                    try
+                    // Display the status.
+                    log.Info(((HttpWebResponse)response).StatusDescription);
+                    // Get the stream containing content returned by the server.
+                    using (dataStream = response.GetResponseStream())
                     {
-                        updateProgress(50, Strings.DownloadingFromInternet);
-                    }
-                    catch
-                    {
-                    }
-                    int len = dataStream.Read(buf1, 0, 1024);
-                    if (len == 0)
-                        break;
-                    bytes -= len;
-                    fs.Write(buf1, 0, len);
-                }
 
-                fs.Close();
-                dataStream.Close();
-                response.Close();
+                        long bytes = response.ContentLength;
+                        long contlen = bytes;
+
+                        byte[] buf1 = new byte[1024];
+
+                        using (FileStream fs = new FileStream(
+                                Path.GetDirectoryName(Application.ExecutablePath) + Path.DirectorySeparatorChar +
+                                @"firmware.hex", FileMode.Create))
+                        {
+                            updateProgress(0, Strings.DownloadingFromInternet);
+
+                            long length = response.ContentLength;
+                            long progress = 0;
+                            dataStream.ReadTimeout = 30000;
+
+                            while (dataStream.CanRead)
+                            {
+                                try
+                                {
+                                    updateProgress(length == 0 ? 50 : (int)((progress * 100) / length), Strings.DownloadingFromInternet);
+                                }
+                                catch
+                                {
+                                }
+                                int len = dataStream.Read(buf1, 0, 1024);
+                                if (len == 0)
+                                    break;
+                                progress += len;
+                                bytes -= len;
+                                fs.Write(buf1, 0, len);
+                            }
+
+                            fs.Close();
+                        }
+                        dataStream.Close();
+                    }
+                    response.Close();
+                }
 
                 updateProgress(100, Strings.DownloadedFromInternet);
                 log.Info("Downloaded");

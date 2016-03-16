@@ -6,6 +6,7 @@ using System.Globalization;
 using System.IO;
 using System.Reflection;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows.Forms;
 using log4net;
@@ -14,7 +15,7 @@ using MissionPlanner.Utilities;
 
 namespace MissionPlanner.GCSViews.ConfigurationView
 {
-    public partial class ConfigRawParams : UserControl, IActivate
+    public partial class ConfigRawParams : UserControl, IActivate, IDeactivate
     {
         // from http://stackoverflow.com/questions/2512781/winforms-big-paragraph-tooltip/2512895#2512895
         private const int maximumSingleLineTooltipLength = 50;
@@ -42,17 +43,33 @@ namespace MissionPlanner.GCSViews.ConfigurationView
             BUT_paramfileload.Enabled = false;
             ThreadPool.QueueUserWorkItem(updatedefaultlist);
 
-            SuspendLayout();
+            Params.Enabled = false;
+
+            foreach (DataGridViewColumn col in Params.Columns)
+            {
+                if (!String.IsNullOrEmpty(Settings.Instance["rawparam_" + col.Name + "_width"]))
+                {
+                    col.Width = Settings.Instance.GetInt32("rawparam_" + col.Name + "_width");
+                }
+            }
 
             processToScreen();
 
-            ResumeLayout();
+            Params.Enabled = true;
 
             Common.MessageShowAgain(Strings.RawParamWarning, Strings.RawParamWarningi);
 
             startup = false;
 
             txt_search.Focus();
+        }
+
+        public void Deactivate()
+        {
+            foreach (DataGridViewColumn col in Params.Columns)
+            {
+                Settings.Instance["rawparam_" + col.Name + "_width"] = col.Width.ToString();
+            }
         }
 
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
@@ -430,11 +447,13 @@ namespace MissionPlanner.GCSViews.ConfigurationView
         {
             if (searchfor.Length >= 2 || searchfor.Length == 0)
             {
+                Regex filter = new Regex(searchfor,RegexOptions.IgnoreCase | RegexOptions.Compiled | RegexOptions.Singleline);
+
                 foreach (DataGridViewRow row in Params.Rows)
                 {
                     foreach (DataGridViewCell cell in row.Cells)
                     {
-                        if (cell.Value != null && cell.Value.ToString().ToLower().Contains(searchfor.ToLower()))
+                        if (cell.Value != null && filter.IsMatch(cell.Value.ToString()))
                         {
                             row.Visible = true;
                             break;

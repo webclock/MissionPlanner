@@ -308,8 +308,11 @@ namespace MissionPlanner
 
             giveComport = true;
 
-            // allow settings to settle - previous dtr 
-            System.Threading.Thread.Sleep(1000);
+            if (BaseStream is SerialPort)
+            {
+                // allow settings to settle - previous dtr 
+                System.Threading.Thread.Sleep(1000);
+            }
 
             Terrain = new TerrainFollow(this);
 
@@ -790,7 +793,7 @@ Please check the following
 
                         if (MAV.apname == MAV_AUTOPILOT.ARDUPILOTMEGA)
                         {
-                            MAV.param[st] = new MAVLinkParam(st, par.param_value, MAV_PARAM_TYPE.REAL32);
+                            MAV.param[st] = new MAVLinkParam(st, par.param_value, MAV_PARAM_TYPE.REAL32, (MAV_PARAM_TYPE) par.param_type);
                         }
                         else
                         {
@@ -984,7 +987,7 @@ Please check the following
 
                         if (MAV.apname == MAV_AUTOPILOT.ARDUPILOTMEGA)
                         {
-                            newparamlist[paramID] = new MAVLinkParam(paramID, par.param_value, MAV_PARAM_TYPE.REAL32);
+                            newparamlist[paramID] = new MAVLinkParam(paramID, par.param_value, MAV_PARAM_TYPE.REAL32, (MAV_PARAM_TYPE)par.param_type);
                         }
                         else
                         {
@@ -1148,7 +1151,7 @@ Please check the following
                         // update table
                         if (MAV.apname == MAV_AUTOPILOT.ARDUPILOTMEGA)
                         {
-                            MAV.param[st] = new MAVLinkParam(st, par.param_value, MAV_PARAM_TYPE.REAL32);
+                            MAV.param[st] = new MAVLinkParam(st, par.param_value, MAV_PARAM_TYPE.REAL32, (MAV_PARAM_TYPE) par.param_type);
                         }
                         else
                         {
@@ -1410,6 +1413,10 @@ Please check the following
                 // send again just incase
                 generatePacket((byte) MAVLINK_MSG_ID.COMMAND_LONG, req);
                 giveComport = false;
+                return true;
+            }
+            else if (actionid == MAV_CMD.GET_HOME_POSITION)
+            {
                 return true;
             }
 
@@ -1704,7 +1711,7 @@ Please check the following
                     }
                     giveComport = false;
                     //return (byte)int.Parse(param["WP_TOTAL"].ToString());
-                    throw new Exception("Timeout on read - getWPCount");
+                    throw new TimeoutException("Timeout on read - getWPCount");
                 }
 
                 buffer = readPacket();
@@ -1727,6 +1734,54 @@ Please check the following
             }
         }
 
+        public Locationwp getHomePosition()
+        {
+            doCommand(MAV_CMD.GET_HOME_POSITION, 0, 0, 0, 0, 0, 0, 0);
+
+            giveComport = true;
+            byte[] buffer;
+
+            DateTime start = DateTime.Now;
+            int retrys = 3;
+
+            while (true)
+            {
+                if (!(start.AddMilliseconds(700) > DateTime.Now))
+                {
+                    if (retrys > 0)
+                    {
+                        log.Info("getHomePosition Retry " + retrys + " - giv com " + giveComport);
+                        doCommand(MAV_CMD.GET_HOME_POSITION, 0, 0, 0, 0, 0, 0, 0);
+                        giveComport = true;
+                        start = DateTime.Now;
+                        retrys--;
+                        continue;
+                    }
+                    giveComport = false;
+                    //return (byte)int.Parse(param["WP_TOTAL"].ToString());
+                    throw new TimeoutException("Timeout on read - getHomePosition");
+                }
+
+                buffer = readPacket();
+                if (buffer.Length > 5)
+                {
+                    if (buffer[5] == (byte)MAVLINK_MSG_ID.HOME_POSITION)
+                    {
+                        var home = buffer.ByteArrayToStructure<mavlink_home_position_t>(6);
+
+                        var loc = new Locationwp().Set(home.latitude / 1.0e7, home.longitude / 1.0e7, home.altitude / 1000.0, (byte)MAV_CMD.WAYPOINT);
+
+                        giveComport = false;
+                        return loc; // should be ushort, but apm has limited wp count < byte
+                    }
+                }
+                else
+                {
+                    log.Info(DateTime.Now + " PC getHomePosition ");
+                }
+            }
+        }
+
         /// <summary>
         /// Gets specfied WP
         /// </summary>
@@ -1737,19 +1792,41 @@ Please check the following
             while (giveComport)
                 System.Threading.Thread.Sleep(100);
 
+            bool use_int = (MAV.cs.capabilities & MAV_PROTOCOL_CAPABILITY.MISSION_INT) > 0;
+
+            object req;
+
+            if (use_int)
+            {
+                mavlink_mission_request_int_t reqi = new mavlink_mission_request_int_t();
+
+                reqi.target_system = MAV.sysid;
+                reqi.target_component = MAV.compid;
+
+                reqi.seq = index;
+                
+                // request
+                generatePacket((byte)MAVLINK_MSG_ID.MISSION_REQUEST_INT, reqi);
+
+                req = reqi;
+            }
+            else
+            {
+                mavlink_mission_request_t reqf = new mavlink_mission_request_t();
+
+                reqf.target_system = MAV.sysid;
+                reqf.target_component = MAV.compid;
+
+                reqf.seq = index;
+
+                // request
+                generatePacket((byte)MAVLINK_MSG_ID.MISSION_REQUEST, reqf);
+
+                req = reqf;
+            }
+
             giveComport = true;
             Locationwp loc = new Locationwp();
-            mavlink_mission_request_t req = new mavlink_mission_request_t();
-
-            req.target_system = MAV.sysid;
-            req.target_component = MAV.compid;
-
-            req.seq = index;
-
-            //Console.WriteLine("getwp req "+ DateTime.Now.Millisecond);
-
-            // request
-            generatePacket((byte) MAVLINK_MSG_ID.MISSION_REQUEST, req);
 
             DateTime start = DateTime.Now;
             int retrys = 5;
@@ -1761,13 +1838,16 @@ Please check the following
                     if (retrys > 0)
                     {
                         log.Info("getWP Retry " + retrys);
-                        generatePacket((byte) MAVLINK_MSG_ID.MISSION_REQUEST, req);
+                        if (use_int)
+                            generatePacket((byte)MAVLINK_MSG_ID.MISSION_REQUEST_INT, req);
+                        else
+                            generatePacket((byte)MAVLINK_MSG_ID.MISSION_REQUEST, req);
                         start = DateTime.Now;
                         retrys--;
                         continue;
                     }
                     giveComport = false;
-                    throw new Exception("Timeout on read - getWP");
+                    throw new TimeoutException("Timeout on read - getWP");
                 }
                 //Console.WriteLine("getwp read " + DateTime.Now.Millisecond);
                 byte[] buffer = readPacket();
@@ -1781,7 +1861,7 @@ Please check the following
                         var wp = buffer.ByteArrayToStructure<mavlink_mission_item_t>(6);
 
                         // received a packet, but not what we requested
-                        if (req.seq != wp.seq)
+                        if (index != wp.seq)
                         {
                             generatePacket((byte) MAVLINK_MSG_ID.MISSION_REQUEST, req);
                             continue;
@@ -1803,9 +1883,38 @@ Please check the following
 
                         break;
                     }
+                    else if (buffer[5] == (byte) MAVLINK_MSG_ID.MISSION_ITEM_INT)
+                    {
+                        //Console.WriteLine("getwp ans " + DateTime.Now.Millisecond);
+
+                        var wp = buffer.ByteArrayToStructure<mavlink_mission_item_int_t>(6);
+
+                        // received a packet, but not what we requested
+                        if (index != wp.seq)
+                        {
+                            generatePacket((byte)MAVLINK_MSG_ID.MISSION_REQUEST_INT, req);
+                            continue;
+                        }
+
+                        loc.options = (byte)(wp.frame);
+                        loc.id = (byte)(wp.command);
+                        loc.p1 = (wp.param1);
+                        loc.p2 = (wp.param2);
+                        loc.p3 = (wp.param3);
+                        loc.p4 = (wp.param4);
+
+                        loc.alt = ((wp.z));
+                        loc.lat = ((wp.x / 1.0e7));
+                        loc.lng = ((wp.y / 1.0e7));
+
+                        log.InfoFormat("getWPint {0} {1} {2} {3} {4} opt {5}", loc.id, loc.p1, loc.alt, loc.lat, loc.lng,
+                            loc.options);
+
+                        break;
+                    }
                     else
                     {
-                        log.Info(DateTime.Now + " PC getwp " + buffer[5]);
+                        //log.Info(DateTime.Now + " PC getwp " + buffer[5]);
                     }
                 }
             }
@@ -2074,31 +2183,60 @@ Please check the following
         /// <param name="frame">global or relative</param>
         /// <param name="current">0 = no , 2 = guided mode</param>
         public MAV_MISSION_RESULT setWP(Locationwp loc, ushort index, MAV_FRAME frame, byte current = 0,
-            byte autocontinue = 1)
+            byte autocontinue = 1, bool use_int = false)
         {
-            mavlink_mission_item_t req = new mavlink_mission_item_t();
+            if (use_int)
+            {
+                mavlink_mission_item_int_t req = new mavlink_mission_item_int_t();
 
-            req.target_system = MAV.sysid;
-            req.target_component = MAV.compid; // MSG_NAMES.MISSION_ITEM
+                req.target_system = MAV.sysid;
+                req.target_component = MAV.compid;
 
-            req.command = loc.id;
+                req.command = loc.id;
 
-            req.current = current;
-            req.autocontinue = autocontinue;
+                req.current = current;
+                req.autocontinue = autocontinue;
 
-            req.frame = (byte) frame;
-            req.y = (float) (loc.lng);
-            req.x = (float) (loc.lat);
-            req.z = (float) (loc.alt);
+                req.frame = (byte) frame;
+                req.y = (int) (loc.lng*1.0e7);
+                req.x = (int) (loc.lat*1.0e7);
+                req.z = (float) (loc.alt);
 
-            req.param1 = loc.p1;
-            req.param2 = loc.p2;
-            req.param3 = loc.p3;
-            req.param4 = loc.p4;
+                req.param1 = loc.p1;
+                req.param2 = loc.p2;
+                req.param3 = loc.p3;
+                req.param4 = loc.p4;
 
-            req.seq = index;
+                req.seq = index;
 
-            return setWP(req);
+                return setWP(req);
+            }
+            else
+            {
+                mavlink_mission_item_t req = new mavlink_mission_item_t();
+
+                req.target_system = MAV.sysid;
+                req.target_component = MAV.compid;
+
+                req.command = loc.id;
+
+                req.current = current;
+                req.autocontinue = autocontinue;
+
+                req.frame = (byte)frame;
+                req.y = (float)(loc.lng);
+                req.x = (float)(loc.lat);
+                req.z = (float)(loc.alt);
+
+                req.param1 = loc.p1;
+                req.param2 = loc.p2;
+                req.param3 = loc.p3;
+                req.param4 = loc.p4;
+
+                req.seq = index;
+
+                return setWP(req);
+            }
         }
 
         public MAV_MISSION_RESULT setWP(mavlink_mission_item_t req)
@@ -2131,7 +2269,7 @@ Please check the following
                         continue;
                     }
                     giveComport = false;
-                    throw new Exception("Timeout on read - setWP");
+                    throw new TimeoutException("Timeout on read - setWP");
                 }
                 byte[] buffer = readPacket();
                 if (buffer.Length > 5)
@@ -2175,6 +2313,103 @@ Please check the following
                             else
                             {
                                 MAV.wps[req.seq] = req;
+                            }
+
+                            return MAV_MISSION_RESULT.MAV_MISSION_ACCEPTED;
+                        }
+                        else
+                        {
+                            log.InfoFormat(
+                                "set wp fail doing " + index + " req " + ans.seq + " ACK 47 or REQ 40 : " + buffer[5] +
+                                " seq {0} ts {1} tc {2}", req.seq, req.target_system, req.target_component);
+                            // resend point now
+                            start = DateTime.MinValue;
+                        }
+                    }
+                    else
+                    {
+                        //Console.WriteLine(DateTime.Now + " PC setwp " + buffer[5]);
+                    }
+                }
+            }
+
+            // return MAV_MISSION_RESULT.MAV_MISSION_INVALID;
+        }
+
+        public MAV_MISSION_RESULT setWP(mavlink_mission_item_int_t req)
+        {
+            giveComport = true;
+
+            ushort index = req.seq;
+
+            log.InfoFormat("setWPint {6} frame {0} cmd {1} p1 {2} x {3} y {4} z {5}", req.frame, req.command, req.param1,
+                req.x / 1.0e7, req.y /1.0e7 , req.z, index);
+
+            // request
+            generatePacket((byte)MAVLINK_MSG_ID.MISSION_ITEM_INT, req);
+
+            DateTime start = DateTime.Now;
+            int retrys = 10;
+
+            while (true)
+            {
+                if (!(start.AddMilliseconds(400) > DateTime.Now))
+                {
+                    if (retrys > 0)
+                    {
+                        log.Info("setWP Retry " + retrys);
+                        generatePacket((byte)MAVLINK_MSG_ID.MISSION_ITEM_INT, req);
+
+                        start = DateTime.Now;
+                        retrys--;
+                        continue;
+                    }
+                    giveComport = false;
+                    throw new TimeoutException("Timeout on read - setWP");
+                }
+                byte[] buffer = readPacket();
+                if (buffer.Length > 5)
+                {
+                    if (buffer[5] == (byte)MAVLINK_MSG_ID.MISSION_ACK)
+                    {
+                        var ans = buffer.ByteArrayToStructure<mavlink_mission_ack_t>(6);
+                        log.Info("set wp " + index + " ACK 47 : " + buffer[5] + " ans " +
+                                 Enum.Parse(typeof(MAV_MISSION_RESULT), ans.type.ToString()));
+                        giveComport = false;
+
+                        if (req.current == 2)
+                        {
+                            MAV.GuidedMode = (Locationwp)req;
+                        }
+                        else if (req.current == 3)
+                        {
+                        }
+                        else
+                        {
+                            MAV.wps[req.seq] = (Locationwp)req;
+                        }
+
+                        return (MAV_MISSION_RESULT)ans.type;
+                    }
+                    else if (buffer[5] == (byte)MAVLINK_MSG_ID.MISSION_REQUEST)
+                    {
+                        var ans = buffer.ByteArrayToStructure<mavlink_mission_request_t>(6);
+                        if (ans.seq == (index + 1))
+                        {
+                            log.Info("set wp doing " + index + " req " + ans.seq + " REQ 40 : " + buffer[5]);
+                            giveComport = false;
+
+                            if (req.current == 2)
+                            {
+                                MAV.GuidedMode = (Locationwp)req;
+                            }
+                            else if (req.current == 3)
+                            {
+
+                            }
+                            else
+                            {
+                                MAV.wps[req.seq] = (Locationwp)req;
                             }
 
                             return MAV_MISSION_RESULT.MAV_MISSION_ACCEPTED;
@@ -2692,7 +2927,7 @@ Please check the following
                             }
                             else
                             {
-                                numLost = packetSeqNo - MAVlist[sysid, compid].recvpacketcount;
+                                numLost = packetSeqNo - expectedPacketSeqNo;
                             }
 
                             MAVlist[sysid, compid].packetslost += numLost;
@@ -2785,9 +3020,7 @@ Please check the following
 
                     if (buffer[5] == (byte) MAVLink.MAVLINK_MSG_ID.STATUSTEXT) // status text
                     {
-                        var msg =
-                            MAVlist[sysid, compid].packets[(byte) MAVLink.MAVLINK_MSG_ID.STATUSTEXT]
-                                .ByteArrayToStructure<MAVLink.mavlink_statustext_t>(6);
+                        var msg = buffer.ByteArrayToStructure<MAVLink.mavlink_statustext_t>(6);
 
                         byte sev = msg.severity;
 
@@ -2825,9 +3058,9 @@ Please check the following
                             MAVlist[sysid, compid].cs.messageHighTime = DateTime.Now;
 
                             if (MainV2.speechEngine != null &&
-                                MainV2.speechEngine.State == System.Speech.Synthesis.SynthesizerState.Ready &&
-                                MainV2.config["speechenable"] != null &&
-                                MainV2.config["speechenable"].ToString() == "True")
+                                MainV2.speechEngine.IsReady &&
+                                Settings.Instance["speechenable"] != null &&
+                                Settings.Instance["speechenable"].ToString() == "True")
                             {
                                 MainV2.speechEngine.SpeakAsync(logdata);
                             }
@@ -3056,7 +3289,7 @@ Please check the following
 
                 if (MAV.apname == MAV_AUTOPILOT.ARDUPILOTMEGA)
                 {
-                    MAVlist[sysid, compid].param[st] = new MAVLinkParam(st, value.param_value, MAV_PARAM_TYPE.REAL32);
+                    MAVlist[sysid, compid].param[st] = new MAVLinkParam(st, value.param_value, MAV_PARAM_TYPE.REAL32, (MAV_PARAM_TYPE)value.param_type);
                 }
                 else
                 {
@@ -3639,9 +3872,12 @@ Please check the following
                 }
                 else
                 {
-                    date1 = date1.AddMilliseconds(dateint/1000);
+                    if ((dateint/1000/1000/60/60) < 9999999)
+                    {
+                        date1 = date1.AddMilliseconds(dateint/1000);
 
-                    lastlogread = date1.ToLocalTime();
+                        lastlogread = date1.ToLocalTime();
+                    }
                 }
             }
             catch
@@ -3763,6 +3999,9 @@ Please check the following
                             break;
                     }
                     break;
+                case MAV_AUTOPILOT.PX4:
+                    MAVlist[sysid, compid].cs.firmware = MainV2.Firmwares.PX4;
+                    break;
                 default:
                     switch (MAVlist[sysid, compid].aptype)
                     {
@@ -3776,13 +4015,13 @@ Please check the following
             switch (MAVlist[sysid, compid].cs.firmware)
             {
                 case MainV2.Firmwares.ArduCopter2:
-                    MAVlist[sysid, compid].Guid = MainV2.config["copter_guid"].ToString();
+                    MAVlist[sysid, compid].Guid = Settings.Instance["copter_guid"].ToString();
                     break;
                 case MainV2.Firmwares.ArduPlane:
-                    MAVlist[sysid, compid].Guid = MainV2.config["plane_guid"].ToString();
+                    MAVlist[sysid, compid].Guid = Settings.Instance["plane_guid"].ToString();
                     break;
                 case MainV2.Firmwares.ArduRover:
-                    MAVlist[sysid, compid].Guid = MainV2.config["rover_guid"].ToString();
+                    MAVlist[sysid, compid].Guid = Settings.Instance["rover_guid"].ToString();
                     break;
             }
         }

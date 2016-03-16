@@ -14,7 +14,7 @@ using MissionPlanner.Utilities;
 
 namespace MissionPlanner.GCSViews.ConfigurationView
 {
-    public partial class ConfigRawParamsTree : UserControl, IActivate
+    public partial class ConfigRawParamsTree : UserControl, IActivate, IDeactivate
     {
         // from http://stackoverflow.com/questions/2512781/winforms-big-paragraph-tooltip/2512895#2512895
         private const int maximumSingleLineTooltipLength = 50;
@@ -40,6 +40,14 @@ namespace MissionPlanner.GCSViews.ConfigurationView
 
             SuspendLayout();
 
+            foreach (ColumnHeader col in Params.Columns)
+            {
+                if (!String.IsNullOrEmpty(Settings.Instance["rawtree_" + col.Text + "_width"]))
+                {
+                    col.Width = Settings.Instance.GetInt32("rawtree_" + col.Text + "_width");
+                }
+            }
+
             processToScreen();
 
             ResumeLayout();
@@ -54,6 +62,14 @@ namespace MissionPlanner.GCSViews.ConfigurationView
             startup = false;
 
             txt_search.Focus();
+        }
+
+        public void Deactivate()
+        {
+            foreach (ColumnHeader col in Params.Columns)
+            {
+                Settings.Instance["rawtree_" + col.Text + "_width"] = col.Width.ToString();
+            }
         }
 
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
